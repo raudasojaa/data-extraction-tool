@@ -22,6 +22,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { listArticles, uploadArticle, deleteArticle } from "@/api/articles";
+import { notifications } from "@mantine/notifications";
 
 const STATUS_COLORS: Record<string, string> = {
   uploaded: "blue",
@@ -45,6 +46,24 @@ export function DashboardPage() {
     mutationFn: (file: File) => uploadArticle(file),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["articles"] });
+      resetRef.current?.();
+      notifications.show({
+        title: "PDF uploaded",
+        message: "Article has been uploaded successfully.",
+        color: "green",
+      });
+    },
+    onError: (error: unknown) => {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail ||
+        (error as { message?: string })?.message ||
+        "Upload failed";
+      notifications.show({
+        title: "Upload failed",
+        message: detail,
+        color: "red",
+      });
       resetRef.current?.();
     },
   });

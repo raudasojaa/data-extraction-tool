@@ -65,6 +65,24 @@ export function ProjectWorkspacePage() {
         queryKey: ["project-articles", projectId],
       });
       resetRef.current?.();
+      notifications.show({
+        title: "PDF uploaded",
+        message: "Article has been added to the project.",
+        color: "green",
+      });
+    },
+    onError: (error: unknown) => {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail ||
+        (error as { message?: string })?.message ||
+        "Upload failed";
+      notifications.show({
+        title: "Upload failed",
+        message: detail,
+        color: "red",
+      });
+      resetRef.current?.();
     },
   });
 

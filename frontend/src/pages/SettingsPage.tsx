@@ -1,5 +1,6 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
+  Accordion,
   Box,
   Button,
   Card,
@@ -15,6 +16,7 @@ import {
   Badge,
   ActionIcon,
   Select,
+  Tooltip,
 } from "@mantine/core";
 import {
   IconUpload,
@@ -22,6 +24,8 @@ import {
   IconUsers,
   IconBook,
   IconTemplate,
+  IconStar,
+  IconInfoCircle,
 } from "@tabler/icons-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listUsers, updateUser } from "@/api/auth";
@@ -133,12 +137,32 @@ function TrainingContributorsSection({
   );
 }
 
+const METHODOLOGY_CATEGORIES = [
+  {
+    value: "grade_handbook",
+    label: "GRADE Handbook",
+    description: "Used as context during GRADE certainty assessments",
+  },
+  {
+    value: "extraction",
+    label: "Extraction Methodology",
+    description: "Used as context during data extraction from articles",
+  },
+  {
+    value: "general",
+    label: "General Reference",
+    description: "Used as context for both extraction and GRADE assessments",
+  },
+];
+
 function MethodologyReferencesSection({
   queryClient,
 }: {
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
   const resetRef = useRef<() => void>(null);
+  const [selectedCategory, setSelectedCategory] =
+    useState<string>("grade_handbook");
 
   const { data: refs = [] } = useQuery({
     queryKey: ["methodology-refs"],
@@ -154,8 +178,8 @@ function MethodologyReferencesSection({
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("title", file.name.replace(".pdf", ""));
-      formData.append("category", "grade_handbook");
+      formData.append("title", file.name.replace(/\.pdf$/i, ""));
+      formData.append("category", selectedCategory);
       const { data } = await api.post("/methodology/references", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -166,9 +190,22 @@ function MethodologyReferencesSection({
       resetRef.current?.();
       notifications.show({
         title: "Reference uploaded",
-        message: "Methodology PDF has been added.",
+        message: "Methodology PDF has been added and is now active.",
         color: "green",
       });
+    },
+    onError: (error: unknown) => {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail ||
+        (error as { message?: string })?.message ||
+        "Upload failed";
+      notifications.show({
+        title: "Upload failed",
+        message: detail,
+        color: "red",
+      });
+      resetRef.current?.();
     },
   });
 
@@ -196,13 +233,42 @@ function MethodologyReferencesSection({
     },
   });
 
+  const categoryInfo = METHODOLOGY_CATEGORIES.find(
+    (c) => c.value === selectedCategory
+  );
+
   return (
     <Card withBorder>
-      <Group justify="space-between" mb="md">
-        <Group>
-          <IconBook size={20} />
-          <Title order={4}>Methodology References</Title>
-        </Group>
+      <Group mb="xs">
+        <IconBook size={20} />
+        <Title order={4}>Methodology References</Title>
+      </Group>
+
+      <Text size="sm" c="dimmed" mb="md">
+        Upload PDF guides (e.g. GRADE handbook, Cochrane methods manual).{" "}
+        <strong>Active PDFs are automatically included as background context
+        for every AI data extraction and GRADE assessment in this workspace.</strong>
+      </Text>
+
+      <Group align="flex-end" mb="md" gap="sm">
+        <Select
+          label="Category"
+          size="xs"
+          style={{ width: 220 }}
+          data={METHODOLOGY_CATEGORIES.map((c) => ({
+            value: c.value,
+            label: c.label,
+          }))}
+          value={selectedCategory}
+          onChange={(v) => v && setSelectedCategory(v)}
+        />
+        {categoryInfo && (
+          <Tooltip label={categoryInfo.description} withArrow>
+            <ActionIcon variant="subtle" color="gray" size="sm" mb={2}>
+              <IconInfoCircle size={16} />
+            </ActionIcon>
+          </Tooltip>
+        )}
         <FileButton
           resetRef={resetRef}
           onChange={(file) => file && uploadMutation.mutate(file)}
@@ -215,17 +281,13 @@ function MethodologyReferencesSection({
               size="xs"
               leftSection={<IconUpload size={14} />}
               loading={uploadMutation.isPending}
+              mb={2}
             >
               Upload PDF
             </Button>
           )}
         </FileButton>
       </Group>
-
-      <Text size="sm" c="dimmed" mb="md">
-        Upload methodological PDFs (GRADE handbook, Cochrane methods, etc.) to
-        be included as context during AI assessments.
-      </Text>
 
       <Table>
         <Table.Thead>
@@ -312,9 +374,35 @@ function ExtractionTemplatesSection({
       resetRef.current?.();
       notifications.show({
         title: "Template uploaded",
-        message:
-          "Extraction template has been parsed and is ready for use.",
+        message: "Extraction template has been parsed and is ready for use.",
         color: "green",
+      });
+    },
+    onError: (error: unknown) => {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail ||
+        (error as { message?: string })?.message ||
+        "Upload failed";
+      notifications.show({
+        title: "Upload failed",
+        message: detail,
+        color: "red",
+      });
+      resetRef.current?.();
+    },
+  });
+
+  const setDefaultMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.put(`/templates/${id}`, { is_default: true });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["templates"] });
+      notifications.show({
+        title: "Default template set",
+        message: "This template will be used for all new extractions.",
+        color: "blue",
       });
     },
   });
@@ -330,7 +418,7 @@ function ExtractionTemplatesSection({
 
   return (
     <Card withBorder>
-      <Group justify="space-between" mb="md">
+      <Group justify="space-between" mb="xs">
         <Group>
           <IconTemplate size={20} />
           <Title order={4}>Extraction Templates</Title>
@@ -354,10 +442,54 @@ function ExtractionTemplatesSection({
         </FileButton>
       </Group>
 
-      <Text size="sm" c="dimmed" mb="md">
-        Upload Word documents that define what data to extract. The document
-        structure (headings, tables) will be parsed into an extraction schema.
+      <Text size="sm" c="dimmed" mb="sm">
+        Upload a Word document (.docx) whose headings and tables define the
+        fields to extract.{" "}
+        <strong>
+          Set one as the global default and it will be used for all future data
+          extractions.
+        </strong>{" "}
+        You can also assign a specific template to individual projects from the
+        Projects page.
       </Text>
+
+      <Accordion variant="contained" mb="md">
+        <Accordion.Item value="format">
+          <Accordion.Control
+            icon={<IconInfoCircle size={16} />}
+            style={{ fontSize: 13 }}
+          >
+            What format should the Word document use?
+          </Accordion.Control>
+          <Accordion.Panel>
+            <Stack gap={4}>
+              <Text size="sm">
+                Structure your Word document like this so the parser can read
+                it correctly:
+              </Text>
+              <Text size="sm">
+                • Use <strong>Heading 1</strong> or <strong>Heading 2</strong>{" "}
+                styles for section names (e.g. "Population", "Intervention",
+                "Outcomes").
+              </Text>
+              <Text size="sm">
+                • Optionally add <strong>tables</strong> under a section: the
+                first row is treated as column headers and each subsequent row
+                becomes a field to extract.
+              </Text>
+              <Text size="sm">
+                • Normal paragraph text under a heading is used as a field
+                description or placeholder.
+              </Text>
+              <Text size="sm" c="dimmed">
+                Example: a heading "Population" with a table whose columns are
+                "Age range", "Diagnosis", "Sample size" will produce three
+                extraction fields under Population.
+              </Text>
+            </Stack>
+          </Accordion.Panel>
+        </Accordion.Item>
+      </Accordion>
 
       <Table>
         <Table.Thead>
@@ -403,10 +535,22 @@ function ExtractionTemplatesSection({
                   )}
                 </Table.Td>
                 <Table.Td>
-                  {tmpl.is_default && (
+                  {tmpl.is_default ? (
                     <Badge color="blue" size="sm">
                       Default
                     </Badge>
+                  ) : (
+                    <Tooltip label="Set as global default" withArrow>
+                      <ActionIcon
+                        variant="subtle"
+                        color="gray"
+                        size="sm"
+                        onClick={() => setDefaultMutation.mutate(tmpl.id)}
+                        loading={setDefaultMutation.isPending}
+                      >
+                        <IconStar size={14} />
+                      </ActionIcon>
+                    </Tooltip>
                   )}
                 </Table.Td>
                 <Table.Td>
