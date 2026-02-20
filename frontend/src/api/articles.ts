@@ -25,9 +25,7 @@ export async function uploadArticle(file: File, projectId?: string) {
   if (projectId) {
     formData.append("project_id", projectId);
   }
-  const { data } = await api.post<Article>("/articles/", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  const { data } = await api.post<Article>("/articles/", formData);
   return data;
 }
 

@@ -180,9 +180,7 @@ function MethodologyReferencesSection({
       formData.append("file", file);
       formData.append("title", file.name.replace(/\.pdf$/i, ""));
       formData.append("category", selectedCategory);
-      const { data } = await api.post("/methodology/references", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.post("/methodology/references", formData);
       return data;
     },
     onSuccess: () => {
@@ -364,9 +362,7 @@ function ExtractionTemplatesSection({
       const formData = new FormData();
       formData.append("file", file);
       formData.append("name", file.name.replace(/\.(docx|doc)$/i, ""));
-      const { data } = await api.post("/templates/", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.post("/templates/", formData);
       return data;
     },
     onSuccess: () => {
