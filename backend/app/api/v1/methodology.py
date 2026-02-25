@@ -1,10 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_admin_user, get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.methodology_reference import MethodologyReference
 from app.models.user import User
@@ -34,9 +35,9 @@ async def list_references(
 )
 async def upload_reference(
     file: UploadFile,
-    title: str,
-    category: str,
-    description: str | None = None,
+    title: str = Form(...),
+    category: str = Form(...),
+    description: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_admin_user),
 ):
@@ -44,6 +45,12 @@ async def upload_reference(
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
     file_bytes = await file.read()
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    if len(file_bytes) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Max size: {settings.max_upload_size_mb}MB",
+        )
     ref = await upload_methodology_reference(
         db, file_bytes, file.filename, title, category, user.id, description
     )

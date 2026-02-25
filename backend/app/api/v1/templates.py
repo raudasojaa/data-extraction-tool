@@ -1,10 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.extraction_template import ExtractionTemplate
 from app.models.user import User
@@ -32,8 +33,8 @@ async def list_templates(
 )
 async def upload_extraction_template(
     file: UploadFile,
-    name: str,
-    description: str | None = None,
+    name: str = Form(...),
+    description: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -41,6 +42,12 @@ async def upload_extraction_template(
         raise HTTPException(status_code=400, detail="Only Word documents are accepted")
 
     file_bytes = await file.read()
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    if len(file_bytes) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Max size: {settings.max_upload_size_mb}MB",
+        )
     template = await upload_template(db, file_bytes, file.filename, name, user.id, description)
     return template
 

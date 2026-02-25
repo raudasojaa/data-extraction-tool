@@ -21,6 +21,7 @@ import {
 } from "@tabler/icons-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { notifications } from "@mantine/notifications";
 import { listArticles, uploadArticle, deleteArticle } from "@/api/articles";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -46,6 +47,18 @@ export function DashboardPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["articles"] });
       resetRef.current?.();
+      notifications.show({
+        title: "Article uploaded",
+        message: "PDF has been uploaded and is being processed.",
+        color: "green",
+      });
+    },
+    onError: () => {
+      notifications.show({
+        title: "Upload failed",
+        message: "Could not upload the article. Please try again.",
+        color: "red",
+      });
     },
   });
 

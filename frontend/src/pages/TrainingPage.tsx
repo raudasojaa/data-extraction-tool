@@ -65,9 +65,7 @@ export function TrainingPage() {
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
-      const { data } = await api.post("/training/import-word-doc", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.post("/training/import-word-doc", formData);
       return data;
     },
     onSuccess: () => {

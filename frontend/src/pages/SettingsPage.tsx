@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
   Box,
   Button,
@@ -133,12 +133,20 @@ function TrainingContributorsSection({
   );
 }
 
+const METHODOLOGY_CATEGORIES = [
+  { value: "grade_handbook", label: "GRADE Handbook" },
+  { value: "cochrane_methods", label: "Cochrane Methods" },
+  { value: "reporting_guideline", label: "Reporting Guideline" },
+  { value: "extraction", label: "Extraction Guide" },
+];
+
 function MethodologyReferencesSection({
   queryClient,
 }: {
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
   const resetRef = useRef<() => void>(null);
+  const [category, setCategory] = useState<string>("grade_handbook");
 
   const { data: refs = [] } = useQuery({
     queryKey: ["methodology-refs"],
@@ -155,10 +163,8 @@ function MethodologyReferencesSection({
       const formData = new FormData();
       formData.append("file", file);
       formData.append("title", file.name.replace(".pdf", ""));
-      formData.append("category", "grade_handbook");
-      const { data } = await api.post("/methodology/references", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      formData.append("category", category);
+      const { data } = await api.post("/methodology/references", formData);
       return data;
     },
     onSuccess: () => {
@@ -168,6 +174,13 @@ function MethodologyReferencesSection({
         title: "Reference uploaded",
         message: "Methodology PDF has been added.",
         color: "green",
+      });
+    },
+    onError: () => {
+      notifications.show({
+        title: "Upload failed",
+        message: "Could not upload the methodology reference. Please try again.",
+        color: "red",
       });
     },
   });
@@ -203,23 +216,32 @@ function MethodologyReferencesSection({
           <IconBook size={20} />
           <Title order={4}>Methodology References</Title>
         </Group>
-        <FileButton
-          resetRef={resetRef}
-          onChange={(file) => file && uploadMutation.mutate(file)}
-          accept="application/pdf"
-        >
-          {(props) => (
-            <Button
-              {...props}
-              variant="outline"
-              size="xs"
-              leftSection={<IconUpload size={14} />}
-              loading={uploadMutation.isPending}
-            >
-              Upload PDF
-            </Button>
-          )}
-        </FileButton>
+        <Group gap="sm">
+          <Select
+            size="xs"
+            data={METHODOLOGY_CATEGORIES}
+            value={category}
+            onChange={(val) => val && setCategory(val)}
+            w={180}
+          />
+          <FileButton
+            resetRef={resetRef}
+            onChange={(file) => file && uploadMutation.mutate(file)}
+            accept="application/pdf"
+          >
+            {(props) => (
+              <Button
+                {...props}
+                variant="outline"
+                size="xs"
+                leftSection={<IconUpload size={14} />}
+                loading={uploadMutation.isPending}
+              >
+                Upload PDF
+              </Button>
+            )}
+          </FileButton>
+        </Group>
       </Group>
 
       <Text size="sm" c="dimmed" mb="md">
@@ -302,9 +324,7 @@ function ExtractionTemplatesSection({
       const formData = new FormData();
       formData.append("file", file);
       formData.append("name", file.name.replace(/\.(docx|doc)$/i, ""));
-      const { data } = await api.post("/templates/", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.post("/templates/", formData);
       return data;
     },
     onSuccess: () => {

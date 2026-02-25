@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.training_example import TrainingExample
 from app.models.user import User
@@ -67,6 +68,12 @@ async def import_word_doc(
         raise HTTPException(status_code=400, detail="Only Word documents are accepted")
 
     file_bytes = await file.read()
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    if len(file_bytes) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Max size: {settings.max_upload_size_mb}MB",
+        )
     examples = await import_word_doc_as_training(db, file_bytes, user.id)
     return examples
 
