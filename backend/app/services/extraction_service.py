@@ -12,6 +12,8 @@ from app.ai.prompts.extraction import (
     EXTRACTION_USER_PROMPT,
     TEMPLATE_EXTRACTION_SYSTEM_PROMPT,
     TEMPLATE_EXTRACTION_USER_PROMPT,
+    VERIFICATION_PASS_SYSTEM_PROMPT,
+    VERIFICATION_PASS_USER_PROMPT,
     build_few_shot_prompt,
 )
 from app.models.article import Article
@@ -22,6 +24,9 @@ from app.services.methodology_service import get_active_references
 from app.services.pdf_service import find_quote_locations
 
 logger = logging.getLogger(__name__)
+
+VALID_CONFIDENCE = {"high", "medium", "low"}
+VALID_MISSING_REASONS = {"not_reported", "explicitly_absent", "not_applicable", "unclear"}
 
 
 async def run_extraction(
@@ -73,7 +78,7 @@ async def run_extraction(
         system_prompt = EXTRACTION_SYSTEM_PROMPT
         user_prompt = EXTRACTION_USER_PROMPT
 
-    # Call Claude API
+    # Pass 1: Initial extraction
     response = claude_client.extract_from_pdf(
         pdf_path=article.file_path,
         system_prompt=system_prompt,
@@ -85,8 +90,52 @@ async def run_extraction(
     # Parse the JSON response
     extraction_data = _parse_extraction_response(response["text"])
 
+    # Normalize confidence metadata
+    _normalize_confidence_metadata(extraction_data)
+
+    # Compute completeness before two-pass check
+    completeness = _compute_completeness(extraction_data)
+
+    # Pass 2: Verification pass if quality is low
+    total = completeness.get("total_fields", 0)
+    low_conf = completeness.get("low_confidence", 0)
+    missing = completeness.get("missing", 0)
+    needs_verify = (low_conf + missing) / max(total, 1) > 0.2
+
+    total_prompt_tokens = response.get("prompt_tokens", 0) or 0
+    total_completion_tokens = response.get("completion_tokens", 0) or 0
+
+    if needs_verify:
+        fields_to_verify = _collect_fields_needing_verification(extraction_data)
+        if fields_to_verify:
+            try:
+                verify_response = claude_client.extract_from_pdf(
+                    pdf_path=article.file_path,
+                    system_prompt=VERIFICATION_PASS_SYSTEM_PROMPT,
+                    user_prompt=VERIFICATION_PASS_USER_PROMPT.format(
+                        initial_extraction=json.dumps(extraction_data, indent=2),
+                        fields_to_verify="\n".join(f"- {f}" for f in fields_to_verify),
+                    ),
+                    methodology_pdfs=methodology_paths if methodology_paths else None,
+                )
+                verify_data = _parse_extraction_response(verify_response["text"])
+                extraction_data = _merge_verification_pass(extraction_data, verify_data)
+                _normalize_confidence_metadata(extraction_data)
+                completeness = _compute_completeness(extraction_data)
+                total_prompt_tokens += verify_response.get("prompt_tokens", 0) or 0
+                total_completion_tokens += verify_response.get("completion_tokens", 0) or 0
+            except Exception:
+                logger.warning("Verification pass failed, using initial extraction", exc_info=True)
+
     # Map quotes to PDF coordinates
     extraction_data = _map_source_locations(article.file_path, extraction_data)
+
+    # Run numerical validation
+    from app.services.validation_service import validate_extraction
+    validation_warnings = validate_extraction(extraction_data)
+
+    # Auto-generate initial review status based on confidence
+    review_status = _generate_initial_review_status(extraction_data)
 
     # Determine version number
     existing_count_result = await db.execute(
@@ -113,9 +162,12 @@ async def run_extraction(
         limitations=extraction_data.get("limitations"),
         conclusions=extraction_data.get("conclusions"),
         custom_fields=extraction_data.get("custom_fields"),
+        completeness_summary=completeness,
+        validation_warnings=validation_warnings if validation_warnings else None,
+        field_review_status=review_status,
         raw_llm_response={"text": response["text"]},
-        prompt_tokens=response.get("prompt_tokens"),
-        completion_tokens=response.get("completion_tokens"),
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
         model_used=response.get("model"),
     )
     db.add(extraction)
@@ -129,7 +181,6 @@ async def run_extraction(
 
 def _parse_extraction_response(text: str) -> dict:
     """Parse the JSON extraction response from Claude."""
-    # Try to find JSON in the response
     text = text.strip()
 
     # Handle markdown code blocks
@@ -149,27 +200,227 @@ def _parse_extraction_response(text: str) -> dict:
         return {"error": "Failed to parse response", "raw_text": text}
 
 
+def _normalize_confidence_metadata(data: dict) -> None:
+    """Ensure all fields have valid confidence and missing_reason values."""
+    for key, value in data.items():
+        if isinstance(value, dict):
+            # Check if this is a field-level dict with "value" key (new format)
+            if "value" in value and ("confidence" in value or "quotes" in value):
+                _normalize_field(value)
+            else:
+                # Section-level dict — recurse into sub-fields
+                for sub_key, sub_val in value.items():
+                    if isinstance(sub_val, dict) and "value" in sub_val:
+                        _normalize_field(sub_val)
+                    elif isinstance(sub_val, dict):
+                        _normalize_confidence_metadata(sub_val)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _normalize_confidence_metadata(item)
+
+
+def _normalize_field(field: dict) -> None:
+    """Normalize a single extraction field's confidence metadata."""
+    conf = field.get("confidence")
+    if conf not in VALID_CONFIDENCE:
+        # If there's a value, default to low; if no value, set to None
+        field["confidence"] = "low" if field.get("value") is not None else None
+
+    reason = field.get("missing_reason")
+    if field.get("value") is None:
+        if reason not in VALID_MISSING_REASONS:
+            field["missing_reason"] = "not_reported"
+    else:
+        field["missing_reason"] = None
+
+    if "quotes" not in field:
+        field["quotes"] = []
+
+
+def _compute_completeness(data: dict) -> dict:
+    """Compute extraction completeness summary from the structured data."""
+    stats = {
+        "total_fields": 0,
+        "extracted": 0,
+        "missing": 0,
+        "low_confidence": 0,
+        "medium_confidence": 0,
+        "high_confidence": 0,
+        "by_section": {},
+        "missing_reasons": {
+            "not_reported": 0,
+            "explicitly_absent": 0,
+            "not_applicable": 0,
+            "unclear": 0,
+        },
+    }
+
+    for section_key, section_val in data.items():
+        if section_key in ("error", "raw_text", "custom_fields"):
+            continue
+
+        section_stats = {"total": 0, "extracted": 0, "missing": 0, "low_confidence": 0}
+
+        if isinstance(section_val, dict):
+            _count_fields_in_dict(section_val, stats, section_stats)
+        elif isinstance(section_val, list):
+            for item in section_val:
+                if isinstance(item, dict):
+                    _count_fields_in_dict(item, stats, section_stats)
+
+        if section_stats["total"] > 0:
+            stats["by_section"][section_key] = section_stats
+
+    return stats
+
+
+def _count_fields_in_dict(d: dict, stats: dict, section_stats: dict) -> None:
+    """Count fields in a dict, updating stats."""
+    for key, val in d.items():
+        if key in ("source_locations", "quotes"):
+            continue
+        if isinstance(val, dict) and "value" in val:
+            stats["total_fields"] += 1
+            section_stats["total"] += 1
+            if val.get("value") is not None:
+                stats["extracted"] += 1
+                section_stats["extracted"] += 1
+                conf = val.get("confidence", "low")
+                if conf == "high":
+                    stats["high_confidence"] += 1
+                elif conf == "medium":
+                    stats["medium_confidence"] += 1
+                else:
+                    stats["low_confidence"] += 1
+                    section_stats["low_confidence"] += 1
+            else:
+                stats["missing"] += 1
+                section_stats["missing"] += 1
+                reason = val.get("missing_reason", "not_reported")
+                if reason in stats["missing_reasons"]:
+                    stats["missing_reasons"][reason] += 1
+        elif isinstance(val, dict):
+            _count_fields_in_dict(val, stats, section_stats)
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, dict):
+                    _count_fields_in_dict(item, stats, section_stats)
+
+
+def _collect_fields_needing_verification(data: dict, prefix: str = "") -> list[str]:
+    """Collect field paths that need verification (low confidence or unclear)."""
+    fields = []
+    for key, val in data.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(val, dict):
+            if "value" in val:
+                conf = val.get("confidence")
+                reason = val.get("missing_reason")
+                if conf == "low" or reason == "unclear":
+                    fields.append(path)
+            else:
+                fields.extend(_collect_fields_needing_verification(val, path))
+        elif isinstance(val, list):
+            for i, item in enumerate(val):
+                if isinstance(item, dict):
+                    fields.extend(
+                        _collect_fields_needing_verification(item, f"{path}[{i}]")
+                    )
+    return fields
+
+
+def _merge_verification_pass(original: dict, verification: dict) -> dict:
+    """Merge verification pass results into the original extraction."""
+    for key, val in verification.items():
+        if key not in original:
+            continue
+        if isinstance(val, dict):
+            if isinstance(original[key], dict):
+                if "value" in val and "value" in original.get(key, {}):
+                    # Direct field — replace if verification improved it
+                    v_conf = val.get("confidence", "low")
+                    o_conf = original[key].get("confidence", "low")
+                    conf_order = {"high": 3, "medium": 2, "low": 1}
+                    if (
+                        conf_order.get(v_conf, 0) > conf_order.get(o_conf, 0)
+                        or (original[key].get("value") is None and val.get("value") is not None)
+                    ):
+                        original[key] = val
+                else:
+                    # Section dict — recurse
+                    _merge_verification_pass(original[key], val)
+        elif isinstance(val, list) and isinstance(original.get(key), list):
+            # For lists (outcomes), merge by index
+            for i, item in enumerate(val):
+                if i < len(original[key]) and isinstance(item, dict):
+                    _merge_verification_pass(original[key][i], item)
+    return original
+
+
+def _generate_initial_review_status(data: dict) -> dict:
+    """Generate initial field review status based on confidence levels."""
+    status = {}
+    _walk_fields_for_review(data, "", status)
+    return status
+
+
+def _walk_fields_for_review(data: dict, prefix: str, status: dict) -> None:
+    """Recursively walk fields and set initial review status."""
+    for key, val in data.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(val, dict):
+            if "value" in val:
+                conf = val.get("confidence")
+                if conf == "low" or val.get("missing_reason") == "unclear":
+                    status[path] = {"status": "needs_review"}
+                else:
+                    status[path] = {"status": "pending"}
+            else:
+                _walk_fields_for_review(val, path, status)
+        elif isinstance(val, list):
+            for i, item in enumerate(val):
+                if isinstance(item, dict):
+                    _walk_fields_for_review(item, f"{path}[{i}]", status)
+
+
 def _map_source_locations(pdf_path: str, data: dict) -> dict:
     """Map verbatim quotes in extraction data to PDF coordinates."""
     for key, value in data.items():
         if isinstance(value, dict):
-            quotes = value.get("quotes", [])
-            if quotes:
+            # Collect all quotes from sub-fields in the new format
+            all_quotes = []
+            for sub_key, sub_val in value.items():
+                if isinstance(sub_val, dict) and "quotes" in sub_val:
+                    all_quotes.extend(sub_val.get("quotes", []))
+            # Also check for top-level quotes in old format
+            if "quotes" in value:
+                all_quotes.extend(value.get("quotes", []))
+
+            if all_quotes:
                 locations = []
-                for quote in quotes:
-                    locs = find_quote_locations(pdf_path, quote)
-                    locations.extend(locs)
+                for quote in all_quotes:
+                    if isinstance(quote, str) and quote:
+                        locs = find_quote_locations(pdf_path, quote)
+                        locations.extend(locs)
                 value["source_locations"] = locations
 
         elif isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    quotes = item.get("quotes", [])
-                    if quotes:
+                    all_quotes = []
+                    for sub_key, sub_val in item.items():
+                        if isinstance(sub_val, dict) and "quotes" in sub_val:
+                            all_quotes.extend(sub_val.get("quotes", []))
+                    if "quotes" in item:
+                        all_quotes.extend(item.get("quotes", []))
+
+                    if all_quotes:
                         locations = []
-                        for quote in quotes:
-                            locs = find_quote_locations(pdf_path, quote)
-                            locations.extend(locs)
+                        for quote in all_quotes:
+                            if isinstance(quote, str) and quote:
+                                locs = find_quote_locations(pdf_path, quote)
+                                locations.extend(locs)
                         item["source_locations"] = locations
 
     return data

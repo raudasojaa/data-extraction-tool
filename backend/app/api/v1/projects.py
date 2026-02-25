@@ -107,6 +107,42 @@ async def list_project_articles(
     return list(result.scalars().all())
 
 
+@router.get("/{project_id}/completeness")
+async def get_project_completeness(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get extraction completeness across all articles in a project."""
+    articles_result = await db.execute(
+        select(Article).where(Article.project_id == project_id).order_by(Article.created_at)
+    )
+    articles = list(articles_result.scalars().all())
+
+    completeness_data = []
+    for article in articles:
+        ext_result = await db.execute(
+            select(Extraction)
+            .where(Extraction.article_id == article.id)
+            .order_by(Extraction.version.desc())
+            .limit(1)
+        )
+        extraction = ext_result.scalar_one_or_none()
+
+        article_data = {
+            "article_id": str(article.id),
+            "title": article.title or "Untitled",
+            "status": article.status,
+            "completeness": extraction.completeness_summary if extraction else None,
+            "validation_warnings_count": (
+                len(extraction.validation_warnings) if extraction and extraction.validation_warnings else 0
+            ),
+        }
+        completeness_data.append(article_data)
+
+    return {"project_id": str(project_id), "articles": completeness_data}
+
+
 @router.post("/{project_id}/extract-all", status_code=status.HTTP_202_ACCEPTED)
 async def batch_extract_project(
     project_id: uuid.UUID,

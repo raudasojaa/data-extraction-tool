@@ -33,6 +33,10 @@ class ExtractionResponse(BaseModel):
     limitations: dict | None
     conclusions: dict | None
     custom_fields: dict | None
+    completeness_summary: dict | None = None
+    validation_warnings: dict | None = None
+    field_review_status: dict | None = None
+    synthesis: dict | None = None
     extraction_template_id: uuid.UUID | None
     model_used: str | None
     prompt_tokens: int | None
@@ -41,6 +45,18 @@ class ExtractionResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ReviewStatusUpdate(BaseModel):
+    field_path: str
+    status: str  # verified, needs_review, pending
+
+
+class ReviewProgressResponse(BaseModel):
+    total_fields: int
+    verified: int
+    needs_review: int
+    pending: int
 
 
 class ExtractionUpdate(BaseModel):

@@ -17,9 +17,11 @@ from app.schemas.extraction import (
     ExtractionResponse,
     ExtractionTrigger,
     ExtractionUpdate,
+    ReviewProgressResponse,
+    ReviewStatusUpdate,
 )
-from app.schemas.training import TaskResponse
 from app.services.extraction_service import run_extraction
+from app.services.synthesis_service import generate_synthesis
 from app.services.training_service import create_training_example_from_correction
 
 router = APIRouter(tags=["extractions"])
@@ -172,3 +174,87 @@ async def list_corrections(
         .order_by(Correction.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+@router.put(
+    "/extractions/{extraction_id}/review-status",
+    response_model=ExtractionResponse,
+)
+async def update_review_status(
+    extraction_id: uuid.UUID,
+    data: ReviewStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Update the review status for a specific field."""
+    result = await db.execute(
+        select(Extraction).where(Extraction.id == extraction_id)
+    )
+    extraction = result.scalar_one_or_none()
+    if not extraction:
+        raise HTTPException(status_code=404, detail="Extraction not found")
+
+    if data.status not in ("verified", "needs_review", "pending"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+
+    review = extraction.field_review_status or {}
+    review[data.field_path] = {
+        "status": data.status,
+        "reviewed_by": str(user.id),
+        "reviewed_at": str(db.info.get("now", "")),
+    }
+    extraction.field_review_status = review
+    await db.flush()
+    return extraction
+
+
+@router.get(
+    "/extractions/{extraction_id}/review-progress",
+    response_model=ReviewProgressResponse,
+)
+async def get_review_progress(
+    extraction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get review progress counts for an extraction."""
+    result = await db.execute(
+        select(Extraction).where(Extraction.id == extraction_id)
+    )
+    extraction = result.scalar_one_or_none()
+    if not extraction:
+        raise HTTPException(status_code=404, detail="Extraction not found")
+
+    review = extraction.field_review_status or {}
+    counts = {"verified": 0, "needs_review": 0, "pending": 0}
+    for field_data in review.values():
+        s = field_data.get("status", "pending") if isinstance(field_data, dict) else "pending"
+        if s in counts:
+            counts[s] += 1
+
+    return ReviewProgressResponse(
+        total_fields=len(review),
+        **counts,
+    )
+
+
+@router.post(
+    "/extractions/{extraction_id}/synthesize",
+    response_model=ExtractionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def trigger_synthesis(
+    extraction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate evidence synthesis for an extraction."""
+    try:
+        await generate_synthesis(db, extraction_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    result = await db.execute(
+        select(Extraction).where(Extraction.id == extraction_id)
+    )
+    return result.scalar_one()

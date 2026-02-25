@@ -43,6 +43,12 @@ class Extraction(Base):
     # Template-driven custom fields
     custom_fields: Mapped[dict | None] = mapped_column(JSONB)
 
+    # Completeness and quality metadata
+    completeness_summary: Mapped[dict | None] = mapped_column(JSONB)
+    validation_warnings: Mapped[dict | None] = mapped_column(JSONB)
+    field_review_status: Mapped[dict | None] = mapped_column(JSONB)
+    synthesis: Mapped[dict | None] = mapped_column(JSONB)
+
     # AI metadata
     raw_llm_response: Mapped[dict | None] = mapped_column(JSONB)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
