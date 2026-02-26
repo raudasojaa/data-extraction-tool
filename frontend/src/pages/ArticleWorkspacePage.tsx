@@ -5,14 +5,18 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getArticle, getArticlePdfUrl } from "@/api/articles";
 import {
   listExtractions,
+  listCorrections,
   triggerExtraction,
   triggerGradeAssessment,
+  triggerSynthesis,
   getGradeAssessments,
   exportExtractionWord,
+  updateReviewStatus,
 } from "@/api/extractions";
 import { PdfViewer } from "@/components/pdf/PdfViewer";
 import { ExtractionPanel } from "@/components/extraction/ExtractionPanel";
 import { GradeAssessmentPanel } from "@/components/grade/GradeAssessmentPanel";
+import { SynthesisPanel } from "@/components/synthesis/SynthesisPanel";
 import { useExtractionStore } from "@/store/extractionStore";
 import { notifications } from "@mantine/notifications";
 
@@ -35,6 +39,12 @@ export function ArticleWorkspacePage() {
   });
 
   const latestExtraction = extractions?.[0] || null;
+
+  const { data: corrections = [] } = useQuery({
+    queryKey: ["corrections", latestExtraction?.id],
+    queryFn: () => listCorrections(latestExtraction!.id),
+    enabled: !!latestExtraction?.id,
+  });
 
   const { data: gradeAssessments = [], isLoading: gradeLoading } = useQuery({
     queryKey: ["grade", latestExtraction?.id],
@@ -74,6 +84,47 @@ export function ArticleWorkspacePage() {
       });
     },
   });
+
+  const synthesisMutation = useMutation({
+    mutationFn: () => triggerSynthesis(latestExtraction!.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["extractions", articleId],
+      });
+      notifications.show({
+        title: "Synthesis complete",
+        message: "Evidence synthesis has been generated.",
+        color: "green",
+      });
+    },
+    onError: () => {
+      notifications.show({
+        title: "Synthesis failed",
+        message: "Could not generate synthesis. Please try again.",
+        color: "red",
+      });
+    },
+  });
+
+  const reviewStatusMutation = useMutation({
+    mutationFn: ({
+      fieldPath,
+      status,
+    }: {
+      fieldPath: string;
+      status: "verified" | "needs_review" | "pending";
+    }) => updateReviewStatus(latestExtraction!.id, fieldPath, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["extractions", articleId] });
+    },
+  });
+
+  const handleReviewStatusChange = (
+    fieldPath: string,
+    status: "verified" | "needs_review" | "pending"
+  ) => {
+    reviewStatusMutation.mutate({ fieldPath, status });
+  };
 
   const handleExport = async () => {
     if (!latestExtraction) return;
@@ -150,6 +201,7 @@ export function ArticleWorkspacePage() {
               <Tabs.List>
                 <Tabs.Tab value="extraction">Extraction</Tabs.Tab>
                 <Tabs.Tab value="grade">GRADE</Tabs.Tab>
+                <Tabs.Tab value="synthesis">Synthesis</Tabs.Tab>
               </Tabs.List>
 
               <Tabs.Panel value="extraction">
@@ -159,6 +211,8 @@ export function ArticleWorkspacePage() {
                   extractionLoading={extractMutation.isPending}
                   onReExtract={() => extractMutation.mutate()}
                   onExport={handleExport}
+                  corrections={corrections}
+                  onReviewStatusChange={handleReviewStatusChange}
                 />
               </Tabs.Panel>
 
@@ -168,6 +222,15 @@ export function ArticleWorkspacePage() {
                   loading={gradeLoading}
                   gradeLoading={gradeMutation.isPending}
                   onRunGrade={() => gradeMutation.mutate()}
+                />
+              </Tabs.Panel>
+
+              <Tabs.Panel value="synthesis">
+                <SynthesisPanel
+                  synthesis={latestExtraction?.synthesis || null}
+                  loading={synthesisMutation.isPending}
+                  onGenerateSynthesis={() => synthesisMutation.mutate()}
+                  hasExtraction={!!latestExtraction}
                 />
               </Tabs.Panel>
             </Tabs>

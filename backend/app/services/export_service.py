@@ -4,7 +4,7 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -20,6 +20,19 @@ CERTAINTY_LABELS = {
     "moderate": "MODERATE",
     "low": "LOW",
     "very_low": "VERY LOW",
+}
+
+CONFIDENCE_MARKERS = {
+    "high": "",
+    "medium": " [medium confidence]",
+    "low": " [LOW CONFIDENCE]",
+}
+
+MISSING_LABELS = {
+    "not_reported": "Not reported",
+    "explicitly_absent": "Explicitly absent",
+    "not_applicable": "N/A",
+    "unclear": "Unclear",
 }
 
 
@@ -96,6 +109,14 @@ def _build_extraction_document(
     if article.journal:
         doc.add_paragraph(f"Journal: {article.journal} ({article.year or 'N/A'})")
 
+    # Completeness summary table
+    if extraction.completeness_summary:
+        _build_completeness_table(doc, extraction.completeness_summary)
+
+    # Validation warnings
+    if extraction.validation_warnings:
+        _build_validation_warnings(doc, extraction.validation_warnings)
+
     # Study design
     if extraction.study_design:
         doc.add_heading("Study Design", level=2)
@@ -144,9 +165,13 @@ def _build_extraction_document(
         doc.add_heading("GRADE Evidence Profile", level=2)
         _build_grade_table(doc, extraction.grade_assessments)
 
+    # Synthesis
+    if extraction.synthesis:
+        _build_synthesis_section(doc, extraction.synthesis)
+
 
 def _add_field_data(doc: Document, data: dict | list) -> None:
-    """Add extracted field data to the document."""
+    """Add extracted field data to the document, with confidence markers."""
     if isinstance(data, list):
         for item in data:
             if isinstance(item, dict):
@@ -156,9 +181,13 @@ def _add_field_data(doc: Document, data: dict | list) -> None:
         return
 
     for key, value in data.items():
-        if key == "source_locations":
+        if key in ("source_locations", "quotes"):
             continue
-        if isinstance(value, dict):
+
+        # Handle new {value, confidence, missing_reason, quotes} format
+        if isinstance(value, dict) and "confidence" in value:
+            _add_confidence_field(doc, key, value)
+        elif isinstance(value, dict):
             doc.add_paragraph(f"{key.replace('_', ' ').title()}:")
             _add_field_data(doc, value)
         elif isinstance(value, list):
@@ -170,6 +199,124 @@ def _add_field_data(doc: Document, data: dict | list) -> None:
                     doc.add_paragraph(f"  - {item}", style="List Bullet")
         else:
             doc.add_paragraph(f"{key.replace('_', ' ').title()}: {value}")
+
+
+def _add_confidence_field(doc: Document, key: str, field: dict) -> None:
+    """Add a field with confidence marker and missing reason styling."""
+    label = key.replace("_", " ").title()
+    confidence = field.get("confidence")
+    missing_reason = field.get("missing_reason")
+    value = field.get("value")
+
+    para = doc.add_paragraph()
+
+    # Label run (bold)
+    label_run = para.add_run(f"{label}: ")
+    label_run.bold = True
+
+    if missing_reason and not value:
+        # Missing field
+        missing_label = MISSING_LABELS.get(missing_reason, missing_reason)
+        value_run = para.add_run(f"[{missing_label}]")
+        value_run.italic = True
+        value_run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+    else:
+        # Value with confidence marker
+        value_run = para.add_run(str(value) if value is not None else "N/A")
+
+        if confidence and confidence != "high":
+            marker = CONFIDENCE_MARKERS.get(confidence, "")
+            conf_run = para.add_run(marker)
+            if confidence == "low":
+                conf_run.font.color.rgb = RGBColor(0xDC, 0x26, 0x26)
+                conf_run.bold = True
+            elif confidence == "medium":
+                conf_run.font.color.rgb = RGBColor(0xD9, 0x77, 0x06)
+
+
+def _build_completeness_table(doc: Document, summary: dict) -> None:
+    """Build an extraction completeness summary table."""
+    doc.add_heading("Extraction Completeness", level=2)
+
+    total = summary.get("total_fields", 0)
+    extracted = summary.get("extracted", 0)
+    missing = summary.get("missing", 0)
+    high = summary.get("high_confidence", 0)
+    medium = summary.get("medium_confidence", 0)
+    low = summary.get("low_confidence", 0)
+
+    table = doc.add_table(rows=2, cols=6)
+    table.style = "Table Grid"
+
+    headers = ["Total Fields", "Extracted", "Missing", "High Conf.", "Medium Conf.", "Low Conf."]
+    values = [str(total), str(extracted), str(missing), str(high), str(medium), str(low)]
+
+    for i, header in enumerate(headers):
+        cell = table.rows[0].cells[i]
+        cell.text = header
+        for run in cell.paragraphs[0].runs:
+            run.bold = True
+            run.font.size = Pt(8)
+
+    for i, val in enumerate(values):
+        table.rows[1].cells[i].text = val
+
+    # Missing reasons breakdown
+    missing_reasons = summary.get("missing_reasons", {})
+    if any(v > 0 for v in missing_reasons.values()):
+        para = doc.add_paragraph()
+        para.add_run("Missing data breakdown: ").bold = True
+        parts = []
+        for reason, count in missing_reasons.items():
+            if count > 0:
+                parts.append(f"{MISSING_LABELS.get(reason, reason)}: {count}")
+        para.add_run(", ".join(parts))
+
+
+def _build_validation_warnings(doc: Document, warnings: list) -> None:
+    """Add validation warnings to the document."""
+    if not warnings:
+        return
+
+    doc.add_heading("Validation Warnings", level=3)
+    for warning in warnings:
+        para = doc.add_paragraph(style="List Bullet")
+        severity = warning.get("severity", "warning")
+        message = warning.get("message", "")
+        field_path = warning.get("field_path", "")
+
+        if severity == "error":
+            run = para.add_run(f"ERROR: ")
+            run.bold = True
+            run.font.color.rgb = RGBColor(0xDC, 0x26, 0x26)
+        else:
+            run = para.add_run(f"Warning: ")
+            run.bold = True
+            run.font.color.rgb = RGBColor(0xD9, 0x77, 0x06)
+
+        para.add_run(f"{message}")
+        if field_path:
+            field_run = para.add_run(f" ({field_path})")
+            field_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+
+
+def _build_synthesis_section(doc: Document, synthesis: dict) -> None:
+    """Add evidence synthesis section to the document."""
+    doc.add_heading("Evidence Synthesis", level=2)
+
+    sections = [
+        ("key_findings", "Key Findings"),
+        ("certainty_of_evidence", "Certainty of Evidence"),
+        ("strengths", "Strengths"),
+        ("limitations", "Limitations"),
+        ("clinical_implications", "Clinical Implications"),
+    ]
+
+    for key, label in sections:
+        content = synthesis.get(key)
+        if content:
+            doc.add_heading(label, level=3)
+            doc.add_paragraph(content)
 
 
 def _build_grade_table(doc: Document, assessments: list[GradeAssessment]) -> None:

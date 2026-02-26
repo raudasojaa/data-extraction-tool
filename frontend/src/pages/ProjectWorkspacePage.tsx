@@ -25,6 +25,7 @@ import { uploadArticle } from "@/api/articles";
 import { exportProjectWord } from "@/api/extractions";
 import { notifications } from "@mantine/notifications";
 import type { Article } from "@/types/article";
+import { CompletenessMatrix } from "@/components/project/CompletenessMatrix";
 
 interface Project {
   id: string;
@@ -166,6 +167,12 @@ export function ProjectWorkspacePage() {
           </Button>
         </Group>
       </Group>
+
+      {articles.length > 0 && (
+        <Card withBorder mb="lg">
+          <CompletenessMatrix projectId={projectId!} />
+        </Card>
+      )}
 
       <Card withBorder>
         <Title order={5} mb="sm">

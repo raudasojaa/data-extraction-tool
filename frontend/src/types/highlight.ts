@@ -31,6 +31,11 @@ export type HighlightCategory =
   | "comparator"
   | "outcomes"
   | "setting"
+  | "follow_up"
+  | "funding"
+  | "limitations"
+  | "conclusions"
+  | "custom_fields"
   | "grade";
 
 export const CATEGORY_COLORS: Record<HighlightCategory, string> = {
@@ -40,5 +45,10 @@ export const CATEGORY_COLORS: Record<HighlightCategory, string> = {
   comparator: "#f59e0b",
   outcomes: "#ef4444",
   setting: "#8b5cf6",
+  follow_up: "#14b8a6",
+  funding: "#a855f7",
+  limitations: "#f97316",
+  conclusions: "#06b6d4",
+  custom_fields: "#6b7280",
   grade: "#ec4899",
 };

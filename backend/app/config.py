@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = '["http://localhost:5173","http://localhost:3000"]'
 
+    # Embeddings
+    embedding_model: str = "all-MiniLM-L6-v2"
+
     # Celery
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"

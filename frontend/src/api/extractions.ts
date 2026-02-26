@@ -102,3 +102,32 @@ export async function exportProjectWord(projectId: string) {
   );
   return response.data;
 }
+
+export async function updateReviewStatus(
+  extractionId: string,
+  fieldPath: string,
+  status: "verified" | "needs_review" | "pending"
+) {
+  const { data } = await api.put(
+    `/extractions/${extractionId}/review-status`,
+    { field_path: fieldPath, status }
+  );
+  return data;
+}
+
+export async function getReviewProgress(extractionId: string) {
+  const { data } = await api.get(
+    `/extractions/${extractionId}/review-progress`
+  );
+  return data;
+}
+
+export async function triggerSynthesis(extractionId: string) {
+  const { data } = await api.post(`/extractions/${extractionId}/synthesize`);
+  return data;
+}
+
+export async function getProjectCompleteness(projectId: string) {
+  const { data } = await api.get(`/projects/${projectId}/completeness`);
+  return data;
+}

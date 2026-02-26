@@ -7,6 +7,59 @@ export interface SourceLocation {
   text: string;
 }
 
+export interface ExtractedField {
+  value: unknown;
+  confidence: "high" | "medium" | "low" | null;
+  missing_reason:
+    | "not_reported"
+    | "explicitly_absent"
+    | "not_applicable"
+    | "unclear"
+    | null;
+  quotes: string[];
+}
+
+export interface CompletenessSummary {
+  total_fields: number;
+  extracted: number;
+  missing: number;
+  low_confidence: number;
+  medium_confidence: number;
+  high_confidence: number;
+  by_section: Record<
+    string,
+    { total: number; extracted: number; missing: number; low_confidence: number }
+  >;
+  missing_reasons: {
+    not_reported: number;
+    explicitly_absent: number;
+    not_applicable: number;
+    unclear: number;
+  };
+}
+
+export interface ValidationWarning {
+  field_path: string;
+  severity: "warning" | "error";
+  check_name: string;
+  message: string;
+}
+
+export interface ReviewStatus {
+  status: "verified" | "needs_review" | "pending";
+  reviewed_by?: string;
+  reviewed_at?: string;
+}
+
+export interface SynthesisData {
+  key_findings: string;
+  certainty_of_evidence: string;
+  strengths: string;
+  limitations: string;
+  clinical_implications: string;
+  raw_text: string;
+}
+
 export interface Extraction {
   id: string;
   article_id: string;
@@ -23,6 +76,10 @@ export interface Extraction {
   limitations: Record<string, unknown> | null;
   conclusions: Record<string, unknown> | null;
   custom_fields: Record<string, unknown> | null;
+  completeness_summary: CompletenessSummary | null;
+  validation_warnings: ValidationWarning[] | null;
+  field_review_status: Record<string, ReviewStatus> | null;
+  synthesis: SynthesisData | null;
   extraction_template_id: string | null;
   model_used: string | null;
   prompt_tokens: number | null;

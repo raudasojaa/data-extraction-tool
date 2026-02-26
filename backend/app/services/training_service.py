@@ -1,12 +1,29 @@
+import logging
 import uuid
 
 from docx import Document
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.correction import Correction
 from app.models.training_example import TrainingExample
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
+
+
+async def _store_embedding(db: AsyncSession, example_id: uuid.UUID, input_text: str) -> None:
+    """Compute and store embedding vector for a training example."""
+    try:
+        from app.ai.example_selector import compute_embedding
+        embedding = compute_embedding(input_text)
+        await db.execute(
+            text("UPDATE training_examples SET embedding_vector = :vec::vector WHERE id = :id"),
+            {"vec": str(embedding), "id": example_id},
+        )
+        await db.flush()
+    except Exception as e:
+        logger.warning("Failed to store embedding for example %s: %s", example_id, e)
 
 
 async def create_training_example_from_correction(
@@ -27,16 +44,21 @@ async def create_training_example_from_correction(
     corrected_output = dict(extraction_data)
     _apply_correction_to_dict(corrected_output, correction.field_path, correction.corrected_value)
 
+    truncated_text = article_text[:10000]
     example = TrainingExample(
         source_type="corrected_extraction",
         source_id=correction.id,
         contributed_by=correction.user_id,
-        input_text=article_text[:10000],  # Truncate for storage
+        input_text=truncated_text,
         expected_output=corrected_output,
         quality_score=1.0,
     )
     db.add(example)
     await db.flush()
+
+    # Compute and store embedding vector
+    await _store_embedding(db, example.id, truncated_text)
+
     return example
 
 
@@ -100,6 +122,12 @@ async def import_word_doc_as_training(
         examples.append(example)
 
     await db.flush()
+
+    # Compute embeddings for all new examples
+    for example in examples:
+        if example.input_text:
+            await _store_embedding(db, example.id, example.input_text)
+
     return examples
 
 

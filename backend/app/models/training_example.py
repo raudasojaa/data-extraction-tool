@@ -27,8 +27,11 @@ class TrainingExample(Base):
     domain: Mapped[str | None] = mapped_column(String(100))
     complexity: Mapped[str | None] = mapped_column(String(50))
 
-    # Embedding stored as JSON array (pgvector column added via migration when extension is available)
+    # Legacy JSONB embedding (kept for backward compat during migration)
     embedding: Mapped[dict | None] = mapped_column(JSONB)
+    # pgvector column for semantic similarity search (384-dim from all-MiniLM-L6-v2)
+    # Added via Alembic migration with HNSW index
+    # embedding_vector: Mapped[...] = mapped_column(Vector(384))  -- managed by migration
 
     quality_score: Mapped[float] = mapped_column(Float, default=1.0)
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
